@@ -1,5 +1,6 @@
 """Script Tool: local screenplay search, keeper timeline and writer."""
 import json
+import textwrap
 import re
 import sys
 import uuid
@@ -295,6 +296,7 @@ class Studio(QMainWindow):
         self.button('Down', lambda: self.move_keeper(1), controls)
         self.button('Remove', self.remove_keeper, controls)
         left.addLayout(controls)
+        self.button('Export Keepers as PDF…', self.export_keepers_pdf, left)
         layout.addLayout(left, 1)
         right = QVBoxLayout()
         self.keeper_preview = QTextEdit()
@@ -601,6 +603,60 @@ class Studio(QMainWindow):
                 self.refresh()
             except (OSError, ValueError, TypeError) as e:
                 QMessageBox.warning(self, 'Open failed', str(e))
+
+    def export_keepers_pdf(self):
+        """Export edited Keeper scenes in their current order as one screenplay PDF."""
+        keepers = self.data.get('keepers', [])
+        if not keepers:
+            QMessageBox.information(self, 'Nothing to export', 'Add scenes to Keepers first.')
+            return
+        filename = (self.data.get('title') or 'Untitled') + ' - Keepers.pdf'
+        path, _ = QFileDialog.getSaveFileName(
+            self, 'Export assembled screenplay', filename, 'PDF files (*.pdf)'
+        )
+        if not path:
+            return
+        # Each Keeper stores its own edited text, including character renames.
+        # Separate scenes with one blank line, without forcing a page break.
+        assembled = '\n\n'.join(k.get('text', '').rstrip('\n') for k in keepers)
+        try:
+            self.write_screenplay_pdf(path, assembled)
+        except Exception as exc:
+            QMessageBox.warning(self, 'Export failed', str(exc))
+            return
+        self.statusBar().showMessage(f'Exported {len(keepers)} Keeper scenes to {path}', 10000)
+
+    @staticmethod
+    def write_screenplay_pdf(path, screenplay):
+        """Paginate monospaced screenplay text with preserved indentation."""
+        doc = fitz.open()
+        page = None
+        y = 72
+        line_height = 14
+        font_size = 11
+        # Letter paper, 1.5-inch left and 1-inch right margins.
+        # Courier at 11pt allows approximately 65 characters per line.
+        left = 108
+        max_columns = 65
+        try:
+            for raw in screenplay.expandtabs(4).split('\n'):
+                wrapped = textwrap.wrap(
+                    raw, width=max_columns, expand_tabs=False,
+                    replace_whitespace=False, drop_whitespace=False,
+                    break_long_words=True, break_on_hyphens=False
+                ) if raw.strip() else ['']
+                for line in wrapped:
+                    if page is None or y > 720:
+                        page = doc.new_page(width=612, height=792)
+                        y = 72
+                    if line:
+                        page.insert_text((left, y), line, fontname='cour', fontsize=font_size)
+                    y += line_height
+            if page is None:
+                doc.new_page(width=612, height=792)
+            doc.save(path)
+        finally:
+            doc.close()
 
     def export_fountain(self):
         path, _ = QFileDialog.getSaveFileName(self, 'Export Fountain', self.data['title'] + '.fountain', 'Fountain (*.fountain)')
