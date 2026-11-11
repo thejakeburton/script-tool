@@ -7,8 +7,8 @@ from pathlib import Path
 
 import fitz
 from rapidfuzz import fuzz
-from PySide6.QtCore import QStandardPaths, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QStandardPaths, QTimer, Qt
+from PySide6.QtGui import QFont, QTextBlockFormat, QTextCursor, QTextCharFormat
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QTextEdit, QFileDialog,
@@ -52,6 +52,70 @@ def split_scenes(text):
     if current:
         scenes.append(current)
     return scenes
+
+class ScriptEditor(QTextEdit):
+    """Plain-text screenplay editor with per-paragraph visual formatting."""
+    STYLES = ('Scene', 'Action', 'Character', 'Dialogue', 'Parenthetical', 'Transition')
+    INDENTS = (0, 0, 180, 110, 145, 220)
+
+    def __init__(self):
+        super().__init__()
+        self.mode = 'Action'
+        self.setFont(QFont('Courier New', 12))
+        self.cursorPositionChanged.connect(self.sync_mode)
+        self.set_mode('Action')
+
+    def sync_mode(self):
+        state = self.textCursor().block().userState()
+        if 0 <= state < len(self.STYLES):
+            self.mode = self.STYLES[state]
+
+    def set_mode(self, mode):
+        if mode not in self.STYLES:
+            return
+        self.mode = mode
+        cursor = self.textCursor()
+        block = cursor.block()
+        fmt = QTextBlockFormat()
+        fmt.setLeftMargin(self.INDENTS[self.STYLES.index(mode)])
+        fmt.setRightMargin(10)
+        cursor.mergeBlockFormat(fmt)
+        block.setUserState(self.STYLES.index(mode))
+        self.setTextCursor(cursor)
+
+    def keyPressEvent(self, event):
+        # Qt maps Command to ControlModifier on macOS.
+        if event.modifiers() & Qt.ControlModifier and event.key() in (
+            Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4, Qt.Key_5, Qt.Key_6
+        ):
+            self.set_mode(self.STYLES[event.key() - Qt.Key_1])
+            event.accept()
+            return
+        if event.key() == Qt.Key_Tab and event.modifiers() == Qt.NoModifier:
+            index = (self.STYLES.index(self.mode) + 1) % len(self.STYLES)
+            self.set_mode(self.STYLES[index])
+            event.accept()
+            return
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and event.modifiers() == Qt.NoModifier:
+            previous = self.textCursor().block().text().strip()
+            current_mode = self.mode
+            super().keyPressEvent(event)
+            if SCENE.match(previous) or current_mode == 'Scene':
+                next_mode = 'Action'
+            elif current_mode == 'Character':
+                next_mode = 'Dialogue'
+            elif current_mode in ('Dialogue', 'Parenthetical'):
+                next_mode = 'Dialogue' if previous else 'Action'
+            elif current_mode == 'Transition':
+                next_mode = 'Scene'
+            elif previous.isupper() and len(previous) < 45 and not previous.endswith(':'):
+                next_mode = 'Dialogue'
+            else:
+                next_mode = 'Action'
+            self.set_mode(next_mode)
+            return
+        super().keyPressEvent(event)
+
 
 class Studio(QMainWindow):
     def __init__(self):
@@ -101,7 +165,6 @@ class Studio(QMainWindow):
         export_menu.addAction('PDF…', self.export_pdf)
 
         scene_menu = self.menuBar().addMenu('&Scene')
-        scene_menu.addAction('Add Selected Scene to Keepers', self.add_keeper)
         scene_menu.addAction('Remove Selected Scene from Library', self.remove_scene)
 
     def build_search(self):
@@ -125,6 +188,10 @@ class Studio(QMainWindow):
         self.preview.setReadOnly(True)
         self.preview.setFont(QFont('Courier New', 12))
         r.addWidget(self.preview)
+        keeper_controls = QHBoxLayout()
+        self.button('Add to Keepers', self.add_keeper, keeper_controls)
+        self.button('Remove from Keepers', self.remove_scene_keeper, keeper_controls)
+        r.addLayout(keeper_controls)
         splitter.addWidget(right)
         layout.addWidget(splitter)
         self.tabs.addTab(tab, 'Search')
@@ -165,11 +232,20 @@ class Studio(QMainWindow):
         self.title_edit.textChanged.connect(self.changed)
         bar.addWidget(self.title_edit)
         layout.addLayout(bar)
+        style_bar = QHBoxLayout()
+        style_bar.addWidget(QLabel('Paragraph style:'))
+        self.style_select = QComboBox()
+        self.style_select.addItems(ScriptEditor.STYLES)
+        self.style_select.currentTextChanged.connect(self.editor_style_changed)
+        style_bar.addWidget(self.style_select)
+        style_bar.addWidget(QLabel('Tab: next style  |  ⌘1–6: select style  |  Enter: auto-format next line'))
+        style_bar.addStretch()
+        layout.addLayout(style_bar)
         splitter = QSplitter()
-        self.editor = QTextEdit()
-        self.editor.setFont(QFont('Courier New', 12))
+        self.editor = ScriptEditor()
         self.editor.setPlaceholderText('INT. DINER - NIGHT\n\nRONNIE\nCoffee. Black.')
         self.editor.textChanged.connect(self.changed)
+        self.editor.cursorPositionChanged.connect(self.update_style_select)
         splitter.addWidget(self.editor)
         sidebar = QWidget()
         side = QVBoxLayout(sidebar)
@@ -185,6 +261,28 @@ class Studio(QMainWindow):
         splitter.setSizes([850, 350])
         layout.addWidget(splitter)
         self.tabs.addTab(tab, 'Writing')
+
+    def editor_style_changed(self, style):
+        if hasattr(self, 'editor'):
+            self.editor.set_mode(style)
+            self.editor.setFocus()
+
+    def update_style_select(self):
+        if hasattr(self, 'style_select'):
+            self.style_select.blockSignals(True)
+            self.style_select.setCurrentText(self.editor.mode)
+            self.style_select.blockSignals(False)
+
+    def remove_scene_keeper(self):
+        index = self.results.currentRow()
+        if not 0 <= index < len(self.matches):
+            return
+        scene_id = self.matches[index]['id']
+        before = len(self.data['keepers'])
+        self.data['keepers'] = [k for k in self.data['keepers'] if k['scene_id'] != scene_id]
+        if len(self.data['keepers']) != before:
+            self.save_local()
+            self.refresh_keepers()
 
     def changed(self):
         self.data['title'] = self.title_edit.text()
@@ -209,6 +307,7 @@ class Studio(QMainWindow):
         self.query.clear()
         self.title_edit.setText('Untitled')
         self.editor.clear()
+        self.reference_text.clear()
         self.save_local()
         self.refresh()
 
@@ -329,6 +428,11 @@ class Studio(QMainWindow):
         self.references.clear()
         self.references.addItems([k['slug'] for k in self.data['keepers']])
         self.references.blockSignals(False)
+        self.reference_text.clear()
+        self.keeper_preview.clear()
+        self.notes.blockSignals(True)
+        self.notes.clear()
+        self.notes.blockSignals(False)
         self.preview_keeper(self.keeper_list.currentRow())
 
     def preview_keeper(self, i):
@@ -401,6 +505,7 @@ class Studio(QMainWindow):
                 self.data = data
                 self.title_edit.setText(data.get('title', 'Untitled'))
                 self.editor.setPlainText(data.get('draft', ''))
+                self.reference_text.clear()
                 self.save_local()
                 self.refresh()
             except (OSError, ValueError, TypeError) as e:
