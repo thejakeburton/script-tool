@@ -15,28 +15,38 @@ from PySide6.QtWidgets import (
     QMessageBox, QInputDialog, QSplitter, QComboBox
 )
 
-# Accept numbered sluglines, mixed punctuation, and PDF extraction spacing.
+# Standard sluglines, plus numbered shooting-script shots such as
+# "3  CLOSER - FRANK   3" and "63A  INT. ELDO - NIGHT  63A".
 SCENE = re.compile(
-    r'^\\s*(?:(?:\\d{1,4}[A-Z]?[.)]?|[A-Z]\\d{1,3})\\s+)?'
-    r'(?:INT\\s*[./-]\\s*EXT|EXT\\s*[./-]\\s*INT|INT|EXT|I\\s*/\\s*E)'
-    r'\\s*[.:-]?\\s+(?=\\S)', re.I
+    r'^\s*(?:(?:\d{1,4}[A-Z]?[.)]?|[A-Z]\d{1,3})\s+)?'
+    r'(?:INT\s*[./-]\s*EXT|EXT\s*[./-]\s*INT|INT|EXT|I\s*/\s*E)'
+    r'\s*[.:-]?\s+(?=\S)', re.I
 )
-def normalize_pdf_text(text):
-    """Repair common spacing artifacts from PDF text extraction."""
-    text = text.replace('\\u00a0', ' ').replace('\\u200b', '').replace('\\ufeff', '')
-    text = text.replace('\\u2013', '-').replace('\\u2014', '-')
-    text = re.sub(r'(?im)^(\\s*(?:\\d+\\s+)?)(I\\s+N\\s+T|E\\s+X\\s+T)\\s*\\.', lambda m: m.group(1) + m.group(2).replace(' ', '') + '.', text)
-    return text
+NUMBERED_SHOT = re.compile(r'^\s*(\d{1,4}[A-Z]?)\s{2,}(.+?)\s{2,}\1(?:\s+\*)?\s*$', re.I)
+CONTINUATION = re.compile(r'^\s*(?:CONTINUED\b|OMITTED\b)', re.I)
 
+def normalize_pdf_text(text):
+    """Repair common PDF extraction whitespace and punctuation."""
+    text = text.replace('\u00a0', ' ').replace('\u200b', '').replace('\ufeff', '')
+    text = text.replace('\u2013', '-').replace('\u2014', '-')
+    return re.sub(
+        r'(?im)^(\s*(?:\d+\s+)?)(I\s+N\s+T|E\s+X\s+T)\s*\.',
+        lambda m: m.group(1) + m.group(2).replace(' ', '') + '.', text
+    )
 
 def split_scenes(text):
     scenes = []
     current = None
-    for line in text.replace('\r', '').split('\n'):
-        if SCENE.match(line):
+    for line in normalize_pdf_text(text).replace('\r', '').split('\n'):
+        numbered = NUMBERED_SHOT.match(line)
+        is_heading = bool(SCENE.match(line))
+        if numbered and not CONTINUATION.match(numbered.group(2)):
+            is_heading = True
+        if is_heading:
             if current:
                 scenes.append(current)
-            current = {'id': str(uuid.uuid4()), 'slug': line.strip(), 'text': line + '\n'}
+            heading = line.strip()
+            current = {'id': str(uuid.uuid4()), 'slug': heading, 'text': line + '\n'}
         elif current:
             current['text'] += line + '\n'
     if current:
