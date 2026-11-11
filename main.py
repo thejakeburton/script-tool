@@ -7,12 +7,12 @@ from pathlib import Path
 
 import fitz
 from rapidfuzz import fuzz
-from PySide6.QtCore import QStandardPaths, QTimer, Qt
+from PySide6.QtCore import QStandardPaths, QTimer, Qt, QStringListModel
 from PySide6.QtGui import QFont, QTextBlockFormat, QTextCursor, QTextCharFormat
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QTextEdit, QFileDialog,
-    QMessageBox, QInputDialog, QSplitter, QComboBox
+    QMessageBox, QInputDialog, QSplitter, QComboBox, QCompleter
 )
 
 # Standard sluglines, plus numbered shooting-script shots such as
@@ -54,7 +54,7 @@ def split_scenes(text):
     return scenes
 
 class ScriptEditor(QTextEdit):
-    """Plain-text screenplay editor with per-paragraph visual formatting."""
+    """Screenplay editor with smart element switching and character recall."""
     STYLES = ('Scene', 'Action', 'Character', 'Dialogue', 'Parenthetical', 'Transition')
     INDENTS = (0, 0, 180, 110, 145, 220)
 
@@ -62,58 +62,138 @@ class ScriptEditor(QTextEdit):
         super().__init__()
         self.mode = 'Action'
         self.setFont(QFont('Courier New', 12))
+        self.characters = set()
+        self.completer = QCompleter(self)
+        self.completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.completer.setCompletionMode(QCompleter.PopupCompletion)
+        self.completer.setWidget(self)
+        self.completer.activated.connect(self.accept_character)
+        self.textChanged.connect(self.suggest_character)
         self.cursorPositionChanged.connect(self.sync_mode)
         self.set_mode('Action')
+
+    def reset_characters(self):
+        self.characters.clear()
+        self.completer.popup().hide()
+
+    def rebuild_characters(self):
+        self.characters.clear()
+        block = self.document().firstBlock()
+        while block.isValid():
+            if block.userState() == self.STYLES.index('Character'):
+                name = block.text().strip().upper()
+                if name and len(name) < 60:
+                    self.characters.add(name)
+            block = block.next()
 
     def sync_mode(self):
         state = self.textCursor().block().userState()
         if 0 <= state < len(self.STYLES):
             self.mode = self.STYLES[state]
+        else:
+            self.mode = 'Action'
 
     def set_mode(self, mode):
         if mode not in self.STYLES:
             return
         self.mode = mode
         cursor = self.textCursor()
-        block = cursor.block()
         fmt = QTextBlockFormat()
         fmt.setLeftMargin(self.INDENTS[self.STYLES.index(mode)])
         fmt.setRightMargin(10)
         cursor.mergeBlockFormat(fmt)
-        block.setUserState(self.STYLES.index(mode))
+        cursor.block().setUserState(self.STYLES.index(mode))
         self.setTextCursor(cursor)
+        if mode != 'Character':
+            self.completer.popup().hide()
+
+    def remember_character(self, name):
+        name = name.strip().upper()
+        if name and len(name) < 60:
+            self.characters.add(name)
+            if hasattr(self, 'characters_changed'):
+                self.characters_changed()
+
+    def suggest_character(self):
+        if self.mode != 'Character':
+            self.completer.popup().hide()
+            return
+        cursor = self.textCursor()
+        if cursor.hasSelection():
+            return
+        prefix = cursor.block().text().strip().upper()
+        if not prefix or len(prefix) > 50:
+            self.completer.popup().hide()
+            return
+        matches = sorted(name for name in self.characters if name.startswith(prefix) and name != prefix)
+        if not matches:
+            self.completer.popup().hide()
+            return
+        self.completer.setModel(QStringListModel(matches, self.completer))
+        self.completer.setCompletionPrefix(prefix)
+        rect = self.cursorRect()
+        rect.setWidth(max(190, self.completer.popup().sizeHintForColumn(0) + 30))
+        self.completer.complete(rect)
+
+    def accept_character(self, name):
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.StartOfBlock, QTextCursor.KeepAnchor)
+        cursor.insertText(name)
+        self.setTextCursor(cursor)
+        self.set_mode('Character')
+        self.completer.popup().hide()
 
     def keyPressEvent(self, event):
-        # Qt maps Command to ControlModifier on macOS.
-        if event.modifiers() & Qt.ControlModifier and event.key() in (
-            Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4, Qt.Key_5, Qt.Key_6
-        ):
-            self.set_mode(self.STYLES[int(event.key()) - int(Qt.Key_1)])
+        key = event.key()
+        modifiers = event.modifiers()
+        popup = self.completer.popup()
+        if popup.isVisible():
+            if key in (Qt.Key_Tab, Qt.Key_Return, Qt.Key_Enter):
+                item = popup.currentIndex()
+                name = item.data() if item.isValid() else self.completer.currentCompletion()
+                if name:
+                    self.accept_character(name)
+                event.accept()
+                return
+            if key == Qt.Key_Escape:
+                popup.hide()
+                event.accept()
+                return
+
+        if modifiers & Qt.ControlModifier and Qt.Key_1 <= key <= Qt.Key_6:
+            self.set_mode(self.STYLES[int(key) - int(Qt.Key_1)])
             event.accept()
             return
-        if event.key() == Qt.Key_Tab and event.modifiers() == Qt.NoModifier:
+
+        if key == Qt.Key_Tab and modifiers == Qt.NoModifier:
+            # Tab cycles through screenplay element types without inserting whitespace.
             index = (self.STYLES.index(self.mode) + 1) % len(self.STYLES)
             self.set_mode(self.STYLES[index])
             event.accept()
             return
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and event.modifiers() == Qt.NoModifier:
+
+        if key in (Qt.Key_Return, Qt.Key_Enter) and modifiers == Qt.NoModifier:
             previous = self.textCursor().block().text().strip()
-            current_mode = self.mode
+            current = self.mode
+            if current == 'Character':
+                self.remember_character(previous)
             super().keyPressEvent(event)
-            if SCENE.match(previous) or current_mode == 'Scene':
+            if current == 'Scene' or SCENE.match(previous):
                 next_mode = 'Action'
-            elif current_mode == 'Character':
+            elif current == 'Character':
                 next_mode = 'Dialogue'
-            elif current_mode in ('Dialogue', 'Parenthetical'):
+            elif current in ('Dialogue', 'Parenthetical'):
                 next_mode = 'Dialogue' if previous else 'Action'
-            elif current_mode == 'Transition':
+            elif current == 'Transition':
                 next_mode = 'Scene'
-            elif previous.isupper() and len(previous) < 45 and not previous.endswith(':'):
+            elif current == 'Action' and previous.isupper() and len(previous) < 45 and not previous.endswith(':'):
+                self.remember_character(previous)
                 next_mode = 'Dialogue'
             else:
                 next_mode = 'Action'
             self.set_mode(next_mode)
             return
+
         super().keyPressEvent(event)
 
 
@@ -145,6 +225,7 @@ class Studio(QMainWindow):
                 pass
         self.title_edit.setText(self.data.get('title', 'Untitled'))
         self.editor.setPlainText(self.data.get('draft', ''))
+        self.editor.characters.update(self.data.get('characters', []))
         self.refresh()
 
     def button(self, text, fn, layout):
@@ -246,6 +327,7 @@ class Studio(QMainWindow):
         self.editor.setPlaceholderText('INT. DINER - NIGHT\n\nRONNIE\nCoffee. Black.')
         self.editor.textChanged.connect(self.changed)
         self.editor.cursorPositionChanged.connect(self.update_style_select)
+        self.editor.characters_changed = self.changed
         splitter.addWidget(self.editor)
         sidebar = QWidget()
         side = QVBoxLayout(sidebar)
@@ -287,6 +369,7 @@ class Studio(QMainWindow):
     def changed(self):
         self.data['title'] = self.title_edit.text()
         self.data['draft'] = self.editor.toPlainText()
+        self.data['characters'] = sorted(self.editor.characters)
         self.timer.start(500)
 
     def save_local(self):
@@ -307,6 +390,7 @@ class Studio(QMainWindow):
         self.query.clear()
         self.title_edit.setText('Untitled')
         self.editor.clear()
+        self.editor.reset_characters()
         self.reference_text.clear()
         self.save_local()
         self.refresh()
@@ -505,6 +589,8 @@ class Studio(QMainWindow):
                 self.data = data
                 self.title_edit.setText(data.get('title', 'Untitled'))
                 self.editor.setPlainText(data.get('draft', ''))
+                self.editor.reset_characters()
+                self.editor.characters.update(data.get('characters', []))
                 self.reference_text.clear()
                 self.save_local()
                 self.refresh()
