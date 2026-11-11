@@ -13,7 +13,7 @@ from PySide6.QtGui import QFont, QTextBlockFormat, QTextCursor, QTextCharFormat
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QTextEdit, QFileDialog,
-    QMessageBox, QInputDialog, QSplitter, QComboBox, QCompleter
+    QMessageBox, QInputDialog, QSplitter, QComboBox, QCompleter, QFrame
 )
 
 # Standard sluglines, plus numbered shooting-script shots such as
@@ -63,6 +63,10 @@ class ScriptEditor(QTextEdit):
         super().__init__()
         self.mode = 'Action'
         self.setFont(QFont('Courier New', 12))
+        self.setLineWrapMode(QTextEdit.FixedPixelWidth)
+        self.setLineWrapColumnOrWidth(650)
+        self.document().setDocumentMargin(38)
+        self.setStyleSheet('QTextEdit { background: #f9f8f4; color: #242424; border: 1px solid #bdbdbd; selection-background-color: #3469a5; }')
         self.characters = set()
         self.completer = QCompleter(self)
         self.completer.setCaseSensitivity(Qt.CaseInsensitive)
@@ -102,6 +106,9 @@ class ScriptEditor(QTextEdit):
         fmt = QTextBlockFormat()
         fmt.setLeftMargin(self.INDENTS[self.STYLES.index(mode)])
         fmt.setRightMargin(10)
+        fmt.setLineHeight(125, QTextBlockFormat.ProportionalHeight)
+        fmt.setTopMargin(10 if mode in ('Scene', 'Character', 'Transition') else 2)
+        fmt.setBottomMargin(5 if mode in ('Dialogue', 'Action') else 2)
         cursor.mergeBlockFormat(fmt)
         cursor.block().setUserState(self.STYLES.index(mode))
         self.setTextCursor(cursor)
@@ -203,7 +210,7 @@ class Studio(QMainWindow):
         super().__init__()
         self.setWindowTitle('Script Tool — Screenplay Studio')
         self.resize(1250, 820)
-        self.data = {'sources': [], 'keepers': [], 'title': 'Untitled', 'draft': ''}
+        self.data = {'sources': [], 'keepers': [], 'title': 'Untitled', 'draft': '', 'alternates': []}
         folder = Path(QStandardPaths.writableLocation(QStandardPaths.AppDataLocation))
         folder.mkdir(parents=True, exist_ok=True)
         self.autosave_file = folder / 'autosave.json'
@@ -225,7 +232,10 @@ class Studio(QMainWindow):
             except (OSError, ValueError, TypeError):
                 pass
         self.title_edit.setText(self.data.get('title', 'Untitled'))
-        self.editor.setPlainText(self.data.get('draft', ''))
+        if self.data.get('draft_html'):
+            self.editor.setHtml(self.data['draft_html'])
+        else:
+            self.editor.setPlainText(self.data.get('draft', ''))
         self.editor.characters.update(self.data.get('characters', []))
         self.refresh()
 
@@ -334,6 +344,7 @@ class Studio(QMainWindow):
         self.editor.setPlaceholderText('INT. DINER - NIGHT\n\nRONNIE\nCoffee. Black.')
         self.editor.textChanged.connect(self.changed)
         self.editor.cursorPositionChanged.connect(self.update_style_select)
+        self.editor.cursorPositionChanged.connect(self.refresh_alternates)
         self.editor.characters_changed = self.changed
         splitter.addWidget(self.editor)
         sidebar = QWidget()
@@ -346,10 +357,76 @@ class Studio(QMainWindow):
         self.reference_text.setReadOnly(True)
         self.reference_text.setFont(QFont('Courier New', 10))
         side.addWidget(self.reference_text)
+        side.addWidget(QLabel('Writing alternates'))
+        self.alternate_list = QListWidget()
+        self.alternate_list.setMaximumHeight(170)
+        side.addWidget(self.alternate_list)
+        alternate_buttons = QHBoxLayout()
+        self.button('Save alternate', self.add_alternate, alternate_buttons)
+        self.button('Use selected', self.use_alternate, alternate_buttons)
+        side.addLayout(alternate_buttons)
+        side.addWidget(QLabel('Select text in the editor, then save an alternate.'))
         splitter.addWidget(sidebar)
         splitter.setSizes([850, 350])
         layout.addWidget(splitter)
         self.tabs.addTab(tab, 'Writing')
+
+    def add_alternate(self):
+        cursor = self.editor.textCursor()
+        selected = cursor.selectedText().replace('\u2029', '\n').strip()
+        if not selected:
+            QMessageBox.information(self, 'Select text', 'Select a passage in Writing first.')
+            return
+        alternates = self.data.setdefault('alternates', [])
+        group = next((g for g in alternates if selected in g['versions']), None)
+        if group is None:
+            group = {'versions': [selected], 'active': selected}
+            alternates.append(group)
+        new, ok = QInputDialog.getMultiLineText(
+            self, 'Add writing alternate', 'Alternate wording:', selected
+        )
+        if ok and new.strip() and new.strip() not in group['versions']:
+            group['versions'].append(new.strip())
+            self.changed()
+        self.refresh_alternates()
+
+    def refresh_alternates(self):
+        if not hasattr(self, 'alternate_list'):
+            return
+        selected = self.editor.textCursor().selectedText().replace('\u2029', '\n').strip()
+        current = self.editor.textCursor().block().text().strip()
+        groups = self.data.get('alternates', [])
+        group = next((g for g in groups if selected in g['versions'] or current in g['versions']), None)
+        self.active_alternate_group = group
+        self.alternate_list.clear()
+        if group:
+            for version in group['versions']:
+                self.alternate_list.addItem(('✓ ' if version == group['active'] else '  ') + version.replace('\n', ' / ')[:130])
+
+    def use_alternate(self):
+        group = getattr(self, 'active_alternate_group', None)
+        row = self.alternate_list.currentRow()
+        if not group or not 0 <= row < len(group['versions']):
+            return
+        new = group['versions'][row]
+        old = group['active']
+        cursor = self.editor.textCursor()
+        selected = cursor.selectedText().replace('\u2029', '\n').strip()
+        if selected != old:
+            # Find the active passage nearest the current cursor.
+            document_text = self.editor.toPlainText()
+            locations = [m.start() for m in re.finditer(re.escape(old), document_text)]
+            if not locations:
+                QMessageBox.warning(self, 'Passage not found', 'Select the active passage to switch its alternate.')
+                return
+            start = min(locations, key=lambda p: abs(p - cursor.position()))
+            cursor.setPosition(start)
+            cursor.setPosition(start + len(old), QTextCursor.KeepAnchor)
+        cursor.insertText(new)
+        group['active'] = new
+        self.editor.setTextCursor(cursor)
+        self.changed()
+        self.refresh_alternates()
 
     def editor_style_changed(self, style):
         if hasattr(self, 'editor'):
@@ -376,6 +453,7 @@ class Studio(QMainWindow):
     def changed(self):
         self.data['title'] = self.title_edit.text()
         self.data['draft'] = self.editor.toPlainText()
+        self.data['draft_html'] = self.editor.toHtml()
         self.data['characters'] = sorted(self.editor.characters)
         self.timer.start(500)
 
@@ -398,6 +476,8 @@ class Studio(QMainWindow):
         self.title_edit.setText('Untitled')
         self.editor.clear()
         self.editor.reset_characters()
+        self.alternate_list.clear()
+        self.active_alternate_group = None
         self.reference_text.clear()
         self.save_local()
         self.refresh()
@@ -447,7 +527,7 @@ class Studio(QMainWindow):
         if not imported:
             return
         self.timer.stop()
-        self.data = {'sources': imported, 'keepers': [], 'title': Path(paths[0]).stem, 'draft': ''}
+        self.data = {'sources': imported, 'keepers': [], 'title': Path(paths[0]).stem, 'draft': '', 'alternates': []}
         self.query.clear()
         self.title_edit.setText(self.data['title'])
         self.editor.clear()
@@ -595,10 +675,15 @@ class Studio(QMainWindow):
                     raise ValueError('Invalid project file')
                 self.data = data
                 self.title_edit.setText(data.get('title', 'Untitled'))
-                self.editor.setPlainText(data.get('draft', ''))
+                if data.get('draft_html'):
+                    self.editor.setHtml(data['draft_html'])
+                else:
+                    self.editor.setPlainText(data.get('draft', ''))
                 self.editor.reset_characters()
                 self.editor.characters.update(data.get('characters', []))
                 self.reference_text.clear()
+                self.alternate_list.clear()
+                self.active_alternate_group = None
                 self.save_local()
                 self.refresh()
             except (OSError, ValueError, TypeError) as e:
