@@ -88,7 +88,7 @@ class ScriptEditor(QTextEdit):
         if event.modifiers() & Qt.ControlModifier and event.key() in (
             Qt.Key_1, Qt.Key_2, Qt.Key_3, Qt.Key_4, Qt.Key_5, Qt.Key_6
         ):
-            self.set_mode(self.STYLES[event.key() - Qt.Key_1])
+            self.set_mode(self.STYLES[int(event.key()) - int(Qt.Key_1)])
             event.accept()
             return
         if event.key() == Qt.Key_Tab and event.modifiers() == Qt.NoModifier:
@@ -318,7 +318,7 @@ class Studio(QMainWindow):
         scene = self.matches[index]
         if QMessageBox.question(
             self, 'Remove scene',
-            f"Remove this scene from the current library?\\n\\n{scene['slug']}\\n\\nExisting Keepers will be preserved.",
+            f"Remove this scene from the current library?\n\n{scene['slug']}\n\nExisting Keepers will be preserved.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No
         ) != QMessageBox.Yes:
             return
@@ -343,7 +343,7 @@ class Studio(QMainWindow):
             try:
                 if name.lower().endswith('.pdf'):
                     with fitz.open(name) as doc:
-                        text = '\\n'.join(page.get_text(sort=True) for page in doc)
+                        text = '\n'.join(page.get_text(sort=True) for page in doc)
                 else:
                     text = Path(name).read_text(encoding='utf-8-sig')
                 scenes = split_scenes(text)
