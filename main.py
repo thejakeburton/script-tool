@@ -15,7 +15,19 @@ from PySide6.QtWidgets import (
     QMessageBox, QInputDialog, QSplitter, QComboBox
 )
 
-SCENE = re.compile(r'^\s*(?:INT\.|EXT\.|INT/EXT\.|EXT/INT\.|I/E\.)\s+', re.I)
+# Accept numbered sluglines, mixed punctuation, and PDF extraction spacing.
+SCENE = re.compile(
+    r'^\\s*(?:(?:\\d{1,4}[A-Z]?[.)]?|[A-Z]\\d{1,3})\\s+)?'
+    r'(?:INT\\s*[./-]\\s*EXT|EXT\\s*[./-]\\s*INT|INT|EXT|I\\s*/\\s*E)'
+    r'\\s*[.:-]?\\s+(?=\\S)', re.I
+)
+def normalize_pdf_text(text):
+    """Repair common spacing artifacts from PDF text extraction."""
+    text = text.replace('\\u00a0', ' ').replace('\\u200b', '').replace('\\ufeff', '')
+    text = text.replace('\\u2013', '-').replace('\\u2014', '-')
+    text = re.sub(r'(?im)^(\\s*(?:\\d+\\s+)?)(I\\s+N\\s+T|E\\s+X\\s+T)\\s*\\.', lambda m: m.group(1) + m.group(2).replace(' ', '') + '.', text)
+    return text
+
 
 def split_scenes(text):
     scenes = []
@@ -176,7 +188,7 @@ class Studio(QMainWindow):
                     text = Path(name).read_text(encoding='utf-8-sig')
                 scenes = split_scenes(text)
                 if not scenes:
-                    QMessageBox.warning(self, 'No scenes', f'No INT./EXT. headings detected in {name}.')
+                    QMessageBox.warning(self, 'No scenes', f'No recognizable scene headings were extracted from {name}. This PDF may use unusual formatting or scanned images. Please provide the PDF so its format can be supported.')
                     continue
                 self.data['sources'].append({'name': Path(name).name, 'id': str(uuid.uuid4()), 'scenes': scenes})
             except Exception as e:
