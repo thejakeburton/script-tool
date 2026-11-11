@@ -258,8 +258,10 @@ class Studio(QMainWindow):
         bar.addWidget(self.query)
         layout.addLayout(bar)
         self.sources_label = QLabel()
-        layout.addWidget(self.sources_label)
+        self.sources_label.setFixedHeight(22)
+        layout.addWidget(self.sources_label, 0)
         splitter = QSplitter()
+        splitter.setOrientation(Qt.Horizontal)
         self.results = QListWidget()
         self.results.currentRowChanged.connect(self.preview_result)
         splitter.addWidget(self.results)
@@ -274,7 +276,10 @@ class Studio(QMainWindow):
         self.button('Remove from Keepers', self.remove_scene_keeper, keeper_controls)
         r.addLayout(keeper_controls)
         splitter.addWidget(right)
-        layout.addWidget(splitter)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 3)
+        splitter.setSizes([480, 720])
+        layout.addWidget(splitter, 1)
         self.tabs.addTab(tab, 'Search')
         self.matches = []
 
