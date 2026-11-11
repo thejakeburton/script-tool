@@ -92,7 +92,9 @@ class Studio(QMainWindow):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         bar = QHBoxLayout()
+        self.button('New project', self.new_project, bar)
         self.button('Import PDF / TXT / Fountain', self.import_files, bar)
+        self.button('Remove selected scene', self.remove_scene, bar)
         self.query = QLineEdit()
         self.query.setPlaceholderText('Search diner scene, dialogue, character, location…')
         self.query.textChanged.connect(self.refresh_search)
@@ -187,22 +189,70 @@ class Studio(QMainWindow):
         except OSError as e:
             self.statusBar().showMessage('Autosave failed: ' + str(e), 10000)
 
+    def new_project(self):
+        if QMessageBox.question(
+            self, 'New project',
+            'Start a new blank project? This clears the current script library, Keepers, and draft. Save your project first if you want to keep it.',
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        ) != QMessageBox.Yes:
+            return
+        self.timer.stop()
+        self.data = {'sources': [], 'keepers': [], 'title': 'Untitled', 'draft': ''}
+        self.query.clear()
+        self.title_edit.setText('Untitled')
+        self.editor.clear()
+        self.save_local()
+        self.refresh()
+
+    def remove_scene(self):
+        index = self.results.currentRow()
+        if not 0 <= index < len(self.matches):
+            return
+        scene = self.matches[index]
+        if QMessageBox.question(
+            self, 'Remove scene',
+            f"Remove this scene from the current library?\\n\\n{scene['slug']}\\n\\nExisting Keepers will be preserved.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        ) != QMessageBox.Yes:
+            return
+        for source in self.data['sources']:
+            source['scenes'] = [item for item in source['scenes'] if item['id'] != scene['id']]
+        self.save_local()
+        self.refresh()
+
     def import_files(self):
         paths, _ = QFileDialog.getOpenFileNames(self, 'Import screenplays', '', 'Screenplays (*.pdf *.txt *.fountain)')
+        if not paths:
+            return
+        if self.data['sources'] or self.data['keepers'] or self.editor.toPlainText().strip():
+            if QMessageBox.question(
+                self, 'Replace current project?',
+                'Importing a new script starts a new project and clears the existing library, Keepers, and draft. Save your current project first if needed. Continue?',
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+            ) != QMessageBox.Yes:
+                return
+        imported = []
         for name in paths:
             try:
                 if name.lower().endswith('.pdf'):
                     with fitz.open(name) as doc:
-                        text = '\n'.join(page.get_text(sort=True) for page in doc)
+                        text = '\\n'.join(page.get_text(sort=True) for page in doc)
                 else:
                     text = Path(name).read_text(encoding='utf-8-sig')
                 scenes = split_scenes(text)
                 if not scenes:
-                    QMessageBox.warning(self, 'No scenes', f'No recognizable scene headings were extracted from {name}. This PDF may use unusual formatting or scanned images. Please provide the PDF so its format can be supported.')
+                    QMessageBox.warning(self, 'No scenes', f'No recognizable scene headings were extracted from {name}. This PDF may use unusual formatting or scanned images.')
                     continue
-                self.data['sources'].append({'name': Path(name).name, 'id': str(uuid.uuid4()), 'scenes': scenes})
+                imported.append({'name': Path(name).name, 'id': str(uuid.uuid4()), 'scenes': scenes})
             except Exception as e:
-                QMessageBox.warning(self, 'Import failed', f'{name}\n{e}')
+                QMessageBox.warning(self, 'Import failed', f'{name}\\n{e}')
+        if not imported:
+            return
+        self.timer.stop()
+        self.data = {'sources': imported, 'keepers': [], 'title': Path(paths[0]).stem, 'draft': ''}
+        self.query.clear()
+        self.title_edit.setText(self.data['title'])
+        self.editor.clear()
         self.save_local()
         self.refresh()
 
