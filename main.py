@@ -70,6 +70,7 @@ class Studio(QMainWindow):
         self.build_search()
         self.build_keepers()
         self.build_writer()
+        self.build_menus()
         self.tabs.currentChanged.connect(lambda _: self.refresh())
         if self.autosave_file.exists():
             try:
@@ -88,13 +89,25 @@ class Studio(QMainWindow):
         layout.addWidget(b)
         return b
 
+    def build_menus(self):
+        file_menu = self.menuBar().addMenu('&File')
+        file_menu.addAction('New Project', self.new_project, 'Ctrl+N')
+        file_menu.addAction('Open Project…', self.open_project, 'Ctrl+O')
+        file_menu.addAction('Save Project…', self.save_project, 'Ctrl+S')
+        file_menu.addSeparator()
+        file_menu.addAction('Import Script…', self.import_files, 'Ctrl+I')
+        export_menu = file_menu.addMenu('Export')
+        export_menu.addAction('Fountain…', self.export_fountain)
+        export_menu.addAction('PDF…', self.export_pdf)
+
+        scene_menu = self.menuBar().addMenu('&Scene')
+        scene_menu.addAction('Add Selected Scene to Keepers', self.add_keeper)
+        scene_menu.addAction('Remove Selected Scene from Library', self.remove_scene)
+
     def build_search(self):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         bar = QHBoxLayout()
-        self.button('New project', self.new_project, bar)
-        self.button('Import PDF / TXT / Fountain', self.import_files, bar)
-        self.button('Remove selected scene', self.remove_scene, bar)
         self.query = QLineEdit()
         self.query.setPlaceholderText('Search diner scene, dialogue, character, location…')
         self.query.textChanged.connect(self.refresh_search)
@@ -112,7 +125,6 @@ class Studio(QMainWindow):
         self.preview.setReadOnly(True)
         self.preview.setFont(QFont('Courier New', 12))
         r.addWidget(self.preview)
-        self.button('Add selected scene to Keepers', self.add_keeper, r)
         splitter.addWidget(right)
         layout.addWidget(splitter)
         self.tabs.addTab(tab, 'Search')
@@ -152,10 +164,6 @@ class Studio(QMainWindow):
         self.title_edit.setPlaceholderText('Screenplay title')
         self.title_edit.textChanged.connect(self.changed)
         bar.addWidget(self.title_edit)
-        self.button('Open project', self.open_project, bar)
-        self.button('Save project', self.save_project, bar)
-        self.button('Export Fountain', self.export_fountain, bar)
-        self.button('Export PDF', self.export_pdf, bar)
         layout.addLayout(bar)
         splitter = QSplitter()
         self.editor = QTextEdit()
