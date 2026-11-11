@@ -213,22 +213,42 @@ class Studio(QMainWindow):
         return next((s for s in self.all_scenes() if s['id'] == scene_id), None)
 
     def refresh_search(self):
-        query = self.query.text().lower().strip()
-        terms = [w for w in query.split() if w not in ('scene', 'the', 'a', 'in')]
+        query = self.query.text().strip()
+        words = re.findall(r"\w+(?:['’]\w+)*", query, flags=re.UNICODE)
+        phrase = (re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, words)) + r"(?!\w)", re.I)
+                  if words else None)
         candidates = self.all_scenes()
-        def rank(s):
-            body = s['text'].lower()
-            slug = s['slug'].lower()
-            return sum(5 if t in slug else 1 if t in body else 0 for t in terms) + (fuzz.partial_ratio(query, slug) / 100 if query else 0)
-        self.matches = sorted((s for s in candidates if not terms or rank(s) > 0), key=rank, reverse=True)[:300]
+        matches = []
+        for scene in candidates:
+            if phrase:
+                match = phrase.search(scene['text'])
+                if not match:
+                    continue
+                start, end = match.span()
+                context = re.sub(r"\s+", " ", scene['text'][max(0, start-45):end+70]).strip()
+                heading_hit = bool(phrase.search(scene['slug']))
+            else:
+                context = ""
+                heading_hit = False
+            matches.append((not heading_hit, scene, context))
+        matches.sort(key=lambda item: item[0])
+        self.matches = [scene for _, scene, _ in matches[:300]]
         self.results.blockSignals(True)
         self.results.clear()
-        self.results.addItems([s['slug'] + '  —  ' + s['source'] for s in self.matches])
+        self.results.addItems([
+            scene['slug'] + '  —  ' + scene['source'] +
+            ('\n…' + context + '…' if context else '')
+            for _, scene, context in matches[:300]
+        ])
         self.results.blockSignals(False)
-        self.sources_label.setText(f"{len(self.data['sources'])} imported scripts · {len(candidates)} indexed scenes")
-        self.preview_result(0)
+        self.sources_label.setText(
+            f"{len(self.data['sources'])} imported scripts · "
+            f"{len(candidates)} indexed scenes · {len(matches)} exact phrase matches"
+        )
         if self.matches:
             self.results.setCurrentRow(0)
+        else:
+            self.preview.setPlainText('')
 
     def preview_result(self, index):
         self.preview.setPlainText(self.matches[index]['text'] if 0 <= index < len(self.matches) else '')
