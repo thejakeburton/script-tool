@@ -106,7 +106,7 @@ class ScriptEditor(QTextEdit):
         fmt = QTextBlockFormat()
         fmt.setLeftMargin(self.INDENTS[self.STYLES.index(mode)])
         fmt.setRightMargin(10)
-        fmt.setLineHeight(125, QTextBlockFormat.LineHeightTypes.ProportionalHeight)
+        fmt.setLineHeight(125.0, int(QTextBlockFormat.LineHeightTypes.ProportionalHeight))
         fmt.setTopMargin(10 if mode in ('Scene', 'Character', 'Transition') else 2)
         fmt.setBottomMargin(5 if mode in ('Dialogue', 'Action') else 2)
         cursor.mergeBlockFormat(fmt)
