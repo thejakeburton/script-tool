@@ -13,7 +13,7 @@ from PySide6.QtGui import QFont, QTextBlockFormat, QTextCursor, QTextCharFormat
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QTextEdit, QFileDialog,
-    QMessageBox, QInputDialog, QSplitter, QComboBox, QCompleter, QFrame, QSizePolicy
+    QMessageBox, QInputDialog, QSplitter, QComboBox, QCompleter, QFrame, QSizePolicy, QScrollArea
 )
 
 # Standard sluglines, plus numbered shooting-script shots such as
@@ -63,7 +63,7 @@ class ScriptEditor(QTextEdit):
         super().__init__()
         self.mode = 'Action'
         self.setFont(QFont('Courier New', 12))
-        self.setLineWrapMode(QTextEdit.FixedPixelWidth)
+        self.setLineWrapMode(QTextEdit.LineWrapMode.FixedPixelWidth)
         self.setLineWrapColumnOrWidth(650)
         self.document().setDocumentMargin(38)
         self.setStyleSheet('QTextEdit { background: #f9f8f4; color: #242424; border: 1px solid #bdbdbd; selection-background-color: #3469a5; }')
@@ -106,7 +106,7 @@ class ScriptEditor(QTextEdit):
         fmt = QTextBlockFormat()
         fmt.setLeftMargin(self.INDENTS[self.STYLES.index(mode)])
         fmt.setRightMargin(10)
-        fmt.setLineHeight(125, QTextBlockFormat.ProportionalHeight)
+        fmt.setLineHeight(125, QTextBlockFormat.LineHeightTypes.ProportionalHeight)
         fmt.setTopMargin(10 if mode in ('Scene', 'Character', 'Transition') else 2)
         fmt.setBottomMargin(5 if mode in ('Dialogue', 'Action') else 2)
         cursor.mergeBlockFormat(fmt)
@@ -218,7 +218,17 @@ class Studio(QMainWindow):
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.save_local)
         self.tabs = QTabWidget()
-        self.setCentralWidget(self.tabs)
+        # Keep both application-level scrollbars at the far right/bottom.
+        # Individual text editors retain their own independent scrollbars.
+        self.tabs.setMinimumSize(1180, 760)
+        self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.window_scroll = QScrollArea(self)
+        self.window_scroll.setWidgetResizable(True)
+        self.window_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.window_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        self.window_scroll.setFrameShape(QFrame.NoFrame)
+        self.window_scroll.setWidget(self.tabs)
+        self.setCentralWidget(self.window_scroll)
         self.build_search()
         self.build_keepers()
         self.build_writer()
