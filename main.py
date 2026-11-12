@@ -13,7 +13,7 @@ from PySide6.QtGui import QFont, QTextBlockFormat, QTextCursor, QTextCharFormat
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTabWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QTextEdit, QFileDialog,
-    QMessageBox, QInputDialog, QSplitter, QComboBox, QCompleter, QFrame
+    QMessageBox, QInputDialog, QSplitter, QComboBox, QCompleter, QFrame, QSizePolicy
 )
 
 # Standard sluglines, plus numbered shooting-script shots such as
@@ -291,6 +291,11 @@ class Studio(QMainWindow):
         splitter.setStretchFactor(1, 3)
         splitter.setSizes([480, 720])
         layout.addWidget(splitter, 1)
+        layout.setStretchFactor(splitter, 1)
+        tab.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.results.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.tabs.addTab(tab, 'Search')
         self.matches = []
 
@@ -314,6 +319,7 @@ class Studio(QMainWindow):
         self.keeper_preview.setFont(QFont('Courier New', 11))
         right.addWidget(self.keeper_preview)
         self.button('Rename character in this keeper', self.rename_character, right)
+        self.button('Edit scene slugline…', self.edit_keeper_slugline, right)
         right.addWidget(QLabel('Keeper notes'))
         self.notes = QTextEdit()
         self.notes.textChanged.connect(self.update_notes)
@@ -636,19 +642,83 @@ class Studio(QMainWindow):
             self.refresh_keepers()
             self.save_local()
 
+    @staticmethod
+    def keeper_character_cues(text):
+        """Find likely standalone character cues, avoiding sluglines and prose."""
+        lines = text.splitlines()
+        cues = set()
+        for index, line in enumerate(lines[:-1]):
+            name = line.strip()
+            if not name or len(name) > 38 or not re.fullmatch(
+                r"[A-Z][A-Z0-9 .'\-]*(?:\s+\((?:V\.O\.|O\.S\.|CONT'D)\))?", name
+            ):
+                continue
+            if SCENE.match(name) or name.endswith(':') or name.startswith(('CUT TO', 'FADE ', 'DISSOLVE')):
+                continue
+            if not lines[index + 1].strip():
+                continue
+            # Typical screenplay cues are preceded by a blank line and
+            # followed by dialogue or a parenthetical.
+            if index > 0 and lines[index - 1].strip():
+                continue
+            cues.add(re.sub(r"\s+\((?:V\.O\.|O\.S\.|CONT'D)\)$", '', name).strip())
+        return sorted(cues)
+
     def rename_character(self):
         i = self.keeper_list.currentRow()
         if i < 0:
             return
-        old, ok = QInputDialog.getText(self, 'Rename character', 'Original character name:')
-        if not ok or not old.strip():
+        keeper = self.data['keepers'][i]
+        names = self.keeper_character_cues(keeper['text'])
+        if not names:
+            QMessageBox.information(self, 'No character cues found',
+                                    'No clearly formatted character cues were detected in this scene.')
             return
-        new, ok = QInputDialog.getText(self, 'Rename character', 'Replacement name:')
+        old, ok = QInputDialog.getItem(self, 'Rename character', 'Character:', names, 0, False)
+        if not ok:
+            return
+        new, ok = QInputDialog.getText(self, 'Rename character', 'New character name:', text=old)
+        new = new.strip().upper()
+        if not ok or not new or '\n' in new:
+            return
+        # Replace dialogue cues and references in the scene, but do not
+        # replace unrelated substrings inside longer words.
+        keeper['text'] = re.sub(
+            r'(?<!\w)' + re.escape(old) + r'(?!\w)',
+            lambda _: new, keeper['text'], flags=re.I
+        )
+        self.preview_keeper(i)
+        self.save_local()
+
+    def edit_keeper_slugline(self):
+        i = self.keeper_list.currentRow()
+        if i < 0:
+            return
+        keeper = self.data['keepers'][i]
+        lines = keeper['text'].splitlines(keepends=True)
+        if not lines:
+            return
+        heading_index = next((j for j, line in enumerate(lines)
+                              if SCENE.match(line) or NUMBERED_SHOT.match(line)), None)
+        if heading_index is None:
+            QMessageBox.information(self, 'No slugline found',
+                                    'This Keeper has no recognized scene heading.')
+            return
+        old = lines[heading_index].strip()
+        new, ok = QInputDialog.getText(self, 'Edit scene slugline',
+                                       'Location / time (e.g. INT. DINER - NIGHT):', text=old)
         if not ok or not new.strip():
             return
-        k = self.data['keepers'][i]
-        k['text'] = re.sub(r'(?<![A-Za-z])' + re.escape(old.strip()) + r'(?![A-Za-z])', lambda _: new.strip(), k['text'], flags=re.I)
-        self.preview_keeper(i)
+        if not SCENE.match(new.strip()):
+            QMessageBox.warning(self, 'Invalid slugline',
+                                'Start the heading with INT., EXT., or INT./EXT.')
+            return
+        newline = '\n' if lines[heading_index].endswith('\n') else ''
+        lines[heading_index] = new.strip() + newline
+        keeper['text'] = ''.join(lines)
+        keeper['slug'] = new.strip()
+        self.refresh_keepers()
+        self.keeper_list.setCurrentRow(i)
         self.save_local()
 
     def preview_reference(self, i):
